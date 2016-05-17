@@ -76,8 +76,8 @@ expect <<- DONE
 DONE
 
 # Edit KRB5 kdc/admin server and domain->realm mapping
-sed -i -e  s/kerberos.//g /etc/krb5.conf
-sed -i -e  s/example.com/localhost/g /etc/krb5.conf
+sed -i -e  s/kerberos.example.com/$(hostname -f)/g /etc/krb5.conf
+sed -i -e  s/example.com/$(hostname -d)/g /etc/krb5.conf
 
 # Start KDC 
 service krb5kdc start
