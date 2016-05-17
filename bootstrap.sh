@@ -41,3 +41,47 @@ sudo yum -y install jmxtrans-251.rpm
 yaml2jmxtrans /vagrant/configfiles/kafka.yaml
 sudo cp kafka_prod.json /var/lib/jmxtrans/
 sudo service jmxtrans start
+
+
+# install MIT Kerboeros and expect
+yum install -y expect krb5-server krb5-libs krb5-workstation
+
+expect <<- DONE
+	#!/usr/bin/expect
+
+	# It shouldn't take longer than 2 minutes to create the database and add a principal.
+	set timeout 120
+
+	#Create KDC user database
+	spawn kdb5_util create -s
+
+		expect "Enter KDC database master key:"
+			send "confluent\r"
+		expect "Re-enter KDC database master key to verify:"
+			send  "confluent\r"
+
+	# Wait until kdb5_util returns control to subshell
+	expect "$ "
+
+	# Add vagrant principal
+	spawn /usr/sbin/kadmin.local -q "addprinc vagrant"
+
+		expect "Enter password for principal "
+			send "confluent\r"
+		expect "Re-enter password for principal "
+			send "confluent\r"
+
+	expect "$ "
+
+DONE
+
+# Edit KRB5 kdc/admin server and domain->realm mapping
+sed -i -e  s/kerberos.//g /etc/krb5.conf
+sed -i -e  s/example.com/localhost/g /etc/krb5.conf
+
+# Start KDC 
+service krb5kdc start
+
+# Kadmin util only needed for remote mgmt
+# service krb5kdc start
+
