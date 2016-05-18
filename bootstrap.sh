@@ -93,7 +93,7 @@ service krb5kdc start
 
 SSLHOME=ssl
 CERTS=$SSLHOME/certs
-KEYS=$KEYS/keys
+KEYS=$SSLHOME/keys
 
 ROLES=( server client )
 
