@@ -41,3 +41,129 @@ sudo yum -y install jmxtrans-251.rpm
 yaml2jmxtrans /vagrant/configfiles/kafka.yaml
 sudo cp kafka_prod.json /var/lib/jmxtrans/
 sudo service jmxtrans start
+
+
+# install MIT Kerboeros, set-up SSL and install expect
+yum install -y expect krb5-server krb5-libs krb5-workstation
+
+PASSWORD=confluent
+VALIDITY=365
+DN="CN=test,OU=sslTesting,O=Confluent,L=Raleigh,ST=NC,C=US"
+
+expect <<- DONE
+	#!/usr/bin/expect
+
+	# It shouldn't take longer than 2 minutes to create the database and add a principal.
+	set timeout 120
+
+	#Create KDC user database
+	spawn kdb5_util create -s
+
+		expect "Enter KDC database master key:"
+			send "$PASSWORD\r"
+		expect "Re-enter KDC database master key to verify:"
+			send  "$PASSWORD\r"
+
+	# Wait until kdb5_util returns control to subshell
+	expect "$ "
+
+	# Add vagrant principal
+	spawn /usr/sbin/kadmin.local -q "addprinc vagrant"
+
+		expect "Enter password for principal "
+			send "$PASSWORD\r"
+		expect "Re-enter password for principal "
+			send "$PASSWORD\r"
+
+	expect "$ "
+
+DONE
+
+# Edit KRB5 kdc/admin server and domain->realm mapping
+sed -i -e  s/kerberos.example.com/$(hostname -f)/g /etc/krb5.conf
+sed -i -e  s/example.com/$(hostname -d)/g /etc/krb5.conf
+
+# Start KDC 
+service krb5kdc start
+
+# Kadmin util only needed for remote mgmt
+# service krb5kdc start
+
+# SSL setup 
+
+SSLHOME=ssl
+CERTS=$SSLHOME/certs
+KEYS=$SSLHOME/keys
+
+ROLES=( server client )
+
+mkdir -p $KEYS $CERTS
+
+# Create CA
+expect <<- DONE
+        set timeout 120
+
+        spawn openssl req -new -x509 -subj "$(echo /$DN | sed 's/,/\//g')" -keyout $KEYS/ca-key -out $CERTS/ca-cert -days $VALIDITY -passin pass:confluent
+                expect "Enter PEM pass phrase:"
+                        send "$PASSWORD\r"
+                expect "Verifying - Enter PEM pass phrase:"
+                        send "$PASSWORD\r"
+                expect "$ "
+DONE
+
+echo "CA created"
+
+for ROLE in ${ROLES[*]}; do
+     # Import root CA into trust store
+     keytool -keystore $CERTS/kafka.$ROLE.truststore.jks \
+          -alias CATrust \
+          -noprompt \
+          -keypass $PASSWORD \
+          -storepass $PASSWORD \
+          -import -file $CERTS/ca-cert 
+
+     # Import root CA into keystore
+     keytool -keystore $KEYS/kafka.$ROLE.keystore.jks \
+	  -alias CATrust \
+	  -noprompt \
+	  -keypass $PASSWORD \
+  	  -storepass $PASSWORD \
+	  -import -file $CERTS/ca-cert
+
+     # Generate key pair for Kafka role
+     keytool -genkeypair \
+        -keystore $KEYS/kafka.$ROLE.keystore.jks \
+        -alias kafka-$ROLE \
+        -keypass $PASSWORD \
+        -storepass $PASSWORD \
+        -dname "$DN" \
+        -ext SAN=DNS:$(hostname -f) \
+        -validity $VALIDITY
+
+    # Create CSR, cert-file, with role’s private key
+     keytool -keystore $KEYS/kafka.$ROLE.keystore.jks \
+          -alias kafka-$ROLE \
+          -noprompt \
+          -keypass $PASSWORD \
+          -storepass $PASSWORD \
+          -certreq -file $CERTS/$ROLE-cert-file
+
+     # Generate signed certificate cert-signed from request cert-file
+     openssl x509 -req \
+	  -CA $CERTS/ca-cert \
+	  -CAkey $KEYS/ca-key \
+          -CAcreateserial \
+          -passin pass:$PASSWORD \
+          -in $CERTS/$ROLE-cert-file \
+          -out $CERTS/$ROLE-cert-signed \
+          -days $VALIDITY \
+
+     # Import cert-signed into the key store
+     keytool -keystore $KEYS/kafka.$ROLE.keystore.jks \
+          -alias kafka-$ROLE \
+          -noprompt \
+          -keypass $PASSWORD \
+          -storepass $PASSWORD \
+          -import -file $CERTS/$ROLE-cert-signed
+
+done
